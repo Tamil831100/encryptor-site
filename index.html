@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local File Encryptor & Decryptor</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    h2 {
+      color: #38bdf8;
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .main-container {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 40px;
+      flex-wrap: wrap;
+      width: 90%;
+      max-width: 1000px;
+    }
+
+    .container {
+      background: #1e293b;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+      width: 380px;
+      min-height: 420px;
+    }
+
+    input, button, textarea {
+      width: 100%;
+      margin: 8px 0;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    button {
+      background-color: #38bdf8;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+
+    button:hover {
+      background-color: #0284c7;
+    }
+
+    textarea {
+      height: 60px;
+      resize: none;
+    }
+
+    .status {
+      margin-top: 10px;
+      color: #22c55e;
+      min-height: 20px;
+    }
+
+    @media (max-width: 850px) {
+      .main-container {
+        flex-direction: column;
+        align-items: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h2>🔐 Local File Encryptor & Decryptor</h2>
+
+  <div class="main-container">
+    <!-- Left side: Encryption -->
+    <div class="container">
+      <h3>🔒 Encrypt & Upload</h3>
+      <label>Choose File</label>
+      <input type="file" id="fileInput" />
+
+      <label>Notify Receiver via Telegram</label>
+      <input type="text" id="receiverId" placeholder="Telegram Chat ID (optional)" />
+
+      <button onclick="encryptAndUpload()">Encrypt, Upload & Download</button>
+
+      <label>Generated Key (Base64)</label>
+      <textarea id="keyOutput" readonly></textarea>
+
+      <div id="status" class="status"></div>
+    </div>
+
+    <!-- Right side: Decryption -->
+    <div class="container">
+      <h3>🔓 Decrypt File</h3>
+      <label>Select Encrypted File (.enc)</label>
+      <input type="file" id="decryptFileInput" />
+
+      <label>Enter Key (Base64)</label>
+      <textarea id="decryptKey" placeholder="Paste key from Telegram"></textarea>
+
+      <button onclick="decryptFile()">Decrypt</button>
+      <div id="decryptStatus" class="status"></div>
+    </div>
+  </div>
+
+  <script>
+    // ✅ Set your backend URL here
+    const BACKEND_URL = "https://your-backend.onrender.com"; 
+    // For local testing, use: "http://localhost:3000"
+
+    // --- ENCRYPTION ---
+    async function generateAESKey() {
+      const key = await crypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt", "decrypt"]
+      );
+      const raw = await crypto.subtle.exportKey("raw", key);
+      return btoa(String.fromCharCode(...new Uint8Array(raw)));
+    }
+
+    async function encryptAndUpload() {
+      const fileInput = document.getElementById("fileInput");
+      const receiverId = document.getElementById("receiverId").value.trim();
+      const status = document.getElementById("status");
+      const keyOutput = document.getElementById("keyOutput");
+
+      if (!fileInput.files.length) return alert("Please choose a file first!");
+      const file = fileInput.files[0];
+
+      const base64Key = await generateAESKey();
+      keyOutput.value = base64Key;
+
+      const keyBuffer = Uint8Array.from(atob(base64Key), (c) => c.charCodeAt(0));
+      const cryptoKey = await crypto.subtle.importKey("raw", keyBuffer, "AES-GCM", false, ["encrypt"]);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const fileBuffer = await file.arrayBuffer();
+
+      const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, fileBuffer);
+      const blob = new Blob([iv, new Uint8Array(encrypted)], { type: "application/octet-stream" });
+
+      // ✅ Download encrypted file locally
+      const downloadLink = document.createElement("a");
+      downloadLink.href = URL.createObjectURL(blob);
+      downloadLink.download = file.name + ".enc";
+      downloadLink.click();
+
+      // ✅ Send file + key to backend for Telegram upload
+      const formData = new FormData();
+      formData.append("file", blob, file.name + ".enc");
+      formData.append("chatId", receiverId);
+      formData.append("keyBase64", base64Key);
+
+      status.textContent = "Uploading and sending key via Telegram...";
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/upload`, {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          status.textContent = "✅ Uploaded, key sent to Telegram, and file downloaded!";
+        } else {
+          status.textContent = "❌ Error: " + data.error;
+        }
+      } catch (err) {
+        console.error("Upload error:", err);
+        status.textContent = "❌ Failed to upload or send key!";
+      }
+    }
+
+    // --- DECRYPTION ---
+    async function decryptFile() {
+      const decryptFileInput = document.getElementById("decryptFileInput");
+      const decryptKey = document.getElementById("decryptKey").value.trim();
+      const decryptStatus = document.getElementById("decryptStatus");
+
+      if (!decryptFileInput.files.length)
+        return alert("Please select a file to decrypt!");
+      if (!decryptKey) return alert("Please paste the Base64 key!");
+
+      try {
+        const file = decryptFileInput.files[0];
+        const arrayBuffer = await file.arrayBuffer();
+        const iv = new Uint8Array(arrayBuffer.slice(0, 12));
+        const encryptedData = new Uint8Array(arrayBuffer.slice(12));
+
+        const keyBuffer = Uint8Array.from(atob(decryptKey), (c) => c.charCodeAt(0));
+        const cryptoKey = await crypto.subtle.importKey("raw", keyBuffer, "AES-GCM", false, ["decrypt"]);
+
+        const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, cryptoKey, encryptedData);
+        const blob = new Blob([decrypted]);
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = file.name.replace(".enc", "_decrypted");
+        a.click();
+
+        decryptStatus.textContent = "✅ File decrypted successfully!";
+      } catch (err) {
+        console.error("Decryption error:", err);
+        decryptStatus.textContent = "❌ Failed to decrypt file!";
+      }
+    }
+  </script>
+</body>
+</html>
